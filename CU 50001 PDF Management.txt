@@ -1,0 +1,229 @@
+OBJECT Codeunit 50001 PDF Management
+{
+  OBJECT-PROPERTIES
+  {
+    Date=12/07/18;
+    Time=[ 7:21:06 PM];
+    Modified=Yes;
+    Version List=;
+  }
+  PROPERTIES
+  {
+    OnRun=BEGIN
+            CLEARLASTERROR;
+            PrintDocument('101016');
+          END;
+
+  }
+  CODE
+  {
+    VAR
+      FileName@1000000019 : Text;
+      Setup@1000000018 : Record 50104;
+      SalesHeader@1000000017 : Record 36;
+      Customer@1000000016 : Record 18;
+      SalesOrder@1000000015 : Report 10075;
+      FileMgt@1000000014 : Codeunit 419;
+      AttachmentFileName@1000000013 : Text;
+      ClientFileName@1000000012 : Text;
+      Window@1000000011 : Dialog;
+      PrintToPDF@1000000010 : Boolean;
+      RunOnceFile@1000000009 : Text;
+      PDFFilePath@1000000006 : Text;
+      PDFFileName@1000000005 : Text;
+      FullFileName@1000000004 : Text;
+      TimeOut@1000000003 : Integer;
+      Cnt@1000000002 : Integer;
+      PDFSettings@1000000001 : DotNet "'Bullzip.PdfWriter, Version=4.0.0.0, Culture=neutral, PublicKeyToken=041d71cacb6e853c'.Bullzip.PdfWriter.ComPdfSettings" RUNONCLIENT;
+      PDFUtil@1000000000 : DotNet "'Bullzip.PdfWriter, Version=4.0.0.0, Culture=neutral, PublicKeyToken=041d71cacb6e853c'.Bullzip.PdfWriter.ComPdfUtil" RUNONCLIENT;
+      Text001@1000000008 : TextConst 'ENU=Processing PDF and email...\\  Phase #1#################';
+      ErrorOnPDFCreation@1000000007 : TextConst 'ENU=Error on PDF Creation!';
+
+    LOCAL PROCEDURE PrintDocument@1000000001(OrderNoP@1000000000 : Code[20]);
+    BEGIN
+      Window.OPEN(Text001);
+      Setup.GET;
+      AttachmentFileName := Setup."Payment Slip File Path" + 'Sales Order-' + OrderNoP + '.pdf';
+      IF FileMgt.ServerFileExists(AttachmentFileName) THEN
+        FileMgt.DeleteServerFile(AttachmentFileName);
+
+      SalesHeader.RESET;
+      SalesHeader.SETRANGE("Document Type", SalesHeader."Document Type"::Order);
+      SalesHeader.SETRANGE("No.", OrderNoP);
+      IF SalesHeader.FINDFIRST THEN BEGIN
+        Customer.GET(SalesHeader."Sell-to Customer No.");
+        CLEAR(SalesOrder);
+        SalesOrder.SETTABLEVIEW(SalesHeader);
+        SalesOrder.USEREQUESTPAGE(FALSE);
+        SetPRinter;
+        PrinterSettings;
+        Window.UPDATE(1, 'Printing PDF');
+        SalesOrder.RUN;
+        WaitOnPDF;
+        FOR Cnt := 1 TO 5 DO
+          IF NOT EXISTS(AttachmentFileName) THEN
+            WaitWait;
+        ResetPrinter;
+        Window.CLOSE;
+      END;
+
+      IF Setup."Email PDFs" THEN BEGIN
+        IF NOT TryCreateMail(AttachmentFileName) THEN
+          ERROR('Error on Sending Mail!!!\%1', GETLASTERRORTEXT);
+      END;
+
+      IF Setup."Move PDFs after Emailing" THEN BEGIN
+        ClientFileName := Setup."Payment Slip History Path" + 'Sales Order-' + OrderNoP + '.pdf';
+        FileMgt.CopyClientFile(AttachmentFileName,ClientFileName,TRUE);
+      END;
+
+      IF Setup."Delete PDFs after Emailing" THEN
+        DeletePDF(AttachmentFileName);
+    END;
+
+    PROCEDURE SetPRinter@1100785001();
+    BEGIN
+      IF ISNULL(PDFSettings) THEN
+        PDFSettings := PDFSettings.ComPdfSettings();
+      IF NOT ISNULL(PDFUtil) THEN;
+        PDFUtil := PDFUtil.ComPdfUtil()
+    END;
+
+    PROCEDURE ResetPrinter@1100785002();
+    BEGIN
+      //CLEAR(PDFSettings);
+    END;
+
+    PROCEDURE PrinterSettings@1100785003();
+    VAR
+      EmployeeL@1000000000 : Record 5200;
+      PrinterSelection@1000000001 : Record 78;
+    BEGIN
+      PrinterSelection.GET(USERID,10075);
+      PrinterSelection.TESTFIELD("Printer Name");
+      PDFSettings.PrinterName := PrinterSelection."Printer Name";
+      RunOnceFile := PDFSettings.GetSettingsFilePath(TRUE);
+      PDFSettings.SetValue('Output', AttachmentFileName);
+      PDFSettings.SetValue('Showsettings', 'Never');
+      PDFSettings.SetValue('ShowPDF', 'No');
+      PDFSettings.SetValue('ShowProgress', 'No');
+      PDFSettings.SetValue('ShowProgressFinished', 'No');
+      PDFSettings.SetValue('SuppressErrors', 'Yes');
+      PDFSettings.SetValue('ConfirmOverwrite', 'No');
+
+      //>>Add Password
+      PDFSettings.SetValue('OwnerPassword', Setup."Master Password");
+      PDFSettings.SetValue('UserPassword', Customer."Document Password");
+      //<<Add Password
+
+      //>>Sign with a digital certificate.
+      PDFSettings.SetValue('SignCertificate', Setup."eSign Certificate Path");
+      PDFSettings.SetValue('SignPassword', Setup."eSign Password");
+      PDFSettings.SetValue('ShowSignature', 'yes');
+      //<<Sign with a digital certificate.
+
+      //>>Add watermark
+      PDFSettings.SetValue('WatermarkText', 'https://sbinesh.blogspot.com');
+      PDFSettings.SetValue('WatermarkColor', '#FF0000');
+      PDFSettings.SetValue('WatermarkVerticalPosition', 'top');
+      PDFSettings.SetValue('WatermarkHorizontalPosition', 'right');
+      PDFSettings.SetValue('WatermarkRotation', '90');
+      PDFSettings.SetValue('WatermarkOutlineWidth', '0.5');
+      PDFSettings.SetValue('WatermarkFontSize', '20');
+      PDFSettings.SetValue('WatermarkVerticalAdjustment', '5');
+      PDFSettings.SetValue('WatermarkHorizontalAdjustment', '1');
+      //<<Add watermark
+      PDFSettings.WriteSettings(TRUE);
+    END;
+
+    PROCEDURE WaitOnPDF@1100785004();
+    BEGIN
+      TimeOut := 0;
+      WHILE EXISTS(RunOnceFile) AND (TimeOut < 10) DO BEGIN
+        Window.UPDATE(1, 'Waiting... - ' + FORMAT(TimeOut));
+        SLEEP(500);
+        TimeOut := TimeOut + 1;
+      END;
+    END;
+
+    PROCEDURE WaitWait@1100785007();
+    BEGIN
+      TimeOut := 0;
+      WHILE TimeOut < Setup."PDF Write Delay (seconds)" DO BEGIN
+        Window.UPDATE(1, 'Waiting - ' + FORMAT(Cnt) + ' - ' + FORMAT(TimeOut));
+        SLEEP(500);
+        TimeOut := TimeOut + 1;
+      END;
+    END;
+
+    PROCEDURE DeletePDF@1100785009(xFileName@1100785001 : Text);
+    BEGIN
+      Window.OPEN('Deleting File...');
+      IF FileMgt.ServerFileExists(xFileName) THEN
+        FileMgt.DeleteServerFile(xFileName);
+      Window.CLOSE;
+    END;
+
+    [TryFunction]
+    PROCEDURE TryCreateMail@1000000002(AttachmentFile@1000000002 : Text);
+    VAR
+      SMTPMailSetup@1000000015 : Record 409;
+      SmtpClient@1000000013 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.SmtpClient";
+      MailMessage@1000000012 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.MailMessage";
+      MailCredintials@1000000011 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.NetworkCredential";
+      MailAddress@1000000010 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.MailAddress";
+      MailAddressFrom@1000000009 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.MailAddress";
+      MailAddressCollectionTo@1000000008 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.MailAddressCollection";
+      MailAddressCollectionCC@1000000007 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.MailAddressCollection";
+      MailAddressCollectionBCC@1000000006 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.MailAddressCollection";
+      MailAttachments@1000000005 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.AttachmentCollection";
+      MailAttachment@1000000004 : DotNet "'System, Version=2.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'.System.Net.Mail.Attachment";
+      Cr@1000000003 : Char;
+    BEGIN
+      SMTPMailSetup.GET;
+      SMTPMailSetup.TESTFIELD("SMTP Server");
+      SMTPMailSetup.TESTFIELD("User ID");
+      MailMessage := MailMessage.MailMessage;
+      MailMessage.Subject := STRSUBSTNO('Sales Order '+ SalesHeader."No.");
+      MailMessage.Body := STRSUBSTNO('Dear '+ Customer.Name + ',');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('<br><br>');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('Please find the attached document for the customer '+
+                                                       Customer."No."+'.');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('<br><br>');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('Sincerely,');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('<br>');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO(USERID);
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('<br>');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO(COMPANYNAME);
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO('<br><br>');
+      MailMessage.Body := MailMessage.Body+FORMAT(Cr)+STRSUBSTNO('<hr>');
+      MailMessage.Body := MailMessage.Body+STRSUBSTNO(
+                                    'This is a system generated mail. Please do not reply to this Mail ID.');
+
+      MailAttachments := MailMessage.Attachments;
+      MailAttachment := MailAttachment.Attachment(AttachmentFile);
+      MailAttachments.Add(MailAttachment);
+
+      MailMessage.IsBodyHtml := TRUE;
+
+      MailAddress := MailAddress.MailAddress(SMTPMailSetup."User ID");
+      MailAddressFrom := MailMessage.From(MailAddress);
+
+      MailAddressCollectionTo := MailMessage."To";
+      MailAddressCollectionTo.Add(Customer."E-Mail");
+
+      MailCredintials := MailCredintials.NetworkCredential(SMTPMailSetup."User ID",SMTPMailSetup.GetPassword);
+      SmtpClient := SmtpClient.SmtpClient();
+      SmtpClient.Host := SMTPMailSetup."SMTP Server";
+      SmtpClient.Port := SMTPMailSetup."SMTP Server Port";
+      SmtpClient.EnableSsl := SMTPMailSetup."Secure Connection";
+      SmtpClient.UseDefaultCredentials := FALSE;
+      SmtpClient.Credentials := MailCredintials;
+      SmtpClient.Send(MailMessage);
+    END;
+
+    BEGIN
+    END.
+  }
+}
+
